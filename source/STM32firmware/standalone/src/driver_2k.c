@@ -4,7 +4,7 @@
 #include "cartridge_io.h"
 
 void emulate_cartridge(uint8_t* cart_rom, uint8_t* cart_ram) {
-    __disable_irq();	// Disable interrupts
+	__disable_irq();	// Disable interrupts
 
 	uint16_t addr, addr_prev = 0;
 	while (1)
@@ -14,7 +14,7 @@ void emulate_cartridge(uint8_t* cart_rom, uint8_t* cart_ram) {
 		// got a stable address
 		if (addr & 0x1000)
 		{ // A12 high
-			DATA_OUT = ((uint16_t)cart_rom[addr&0xFFF])<<8;
+			DATA_OUT = ((uint16_t)cart_rom[addr&0x7FF])<<8;
 			SET_DATA_MODE_OUT
 			// wait for address bus to change
 			while (ADDR_IN == addr) ;

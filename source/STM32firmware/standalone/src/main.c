@@ -28,7 +28,7 @@
 
 uint8_t ram[96 * 1024];
 
-extern void emulate_cartridge(uint8_t* image, uint8_t* ram);
+extern void emulate_cartridge(uint8_t* cart_rom, uint8_t* ram);
 
 GPIO_InitTypeDef  GPIO_InitStructure;
 

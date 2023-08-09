@@ -32,7 +32,11 @@ GARBAGE = $(DEPDIR) $(BUILDDIR)
 
 OBJECTS_MAIN = $(addprefix $(BUILDDIR)/, $(addsuffix .o, $(basename $(SOURCES_MAIN))))
 
-DRIVERS = $(BUILDDIR)/driver_4k.bin $(BUILDDIR)/driver_3ep_32k.bin
+DRIVERS = \
+	$(BUILDDIR)/driver_2k.bin \
+	$(BUILDDIR)/driver_4k.bin \
+	$(BUILDDIR)/driver_4ksc.bin \
+	$(BUILDDIR)/driver_3ep_32k.bin
 
 CFLAGS = \
 	-MT $@ -MMD -MP -MF $(DEPDIR)/$*.d \

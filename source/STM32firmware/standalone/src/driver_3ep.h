@@ -13,7 +13,7 @@
  *   - read $x800, write $xa00
  *   - read $xc00, write $xe00
  */
-void emulate_cartridge_generic(uint8_t* buffer, uint32_t image_size, uint8_t* cart_ram)
+void emulate_cartridge_generic(uint8_t* cart_rom, uint32_t image_size, uint8_t* cart_ram)
 {
 	int cartRAMPages = 64;
 	int cartROMPages = image_size / 1024;
@@ -21,7 +21,6 @@ void emulate_cartridge_generic(uint8_t* buffer, uint32_t image_size, uint8_t* ca
 	uint16_t last_addr = 0;
 	bool banking_locked = true;
 	uint16_t act_bank = 0;
-	uint8_t* cart_rom = buffer;
 
 	bool bankIsRAM[4] = { false, false, false, false };
 	uint8_t *bankPtr[4] = { &cart_rom[0], &cart_rom[0], &cart_rom[0], &cart_rom[0] };
