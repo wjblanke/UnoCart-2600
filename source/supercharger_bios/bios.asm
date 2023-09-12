@@ -64,6 +64,9 @@ HMP0    equ  $20
 HMP1    equ  $21
 HMOVE   equ  $2a
 
+TRAMPOLINE equ $FA
+WAIT equ $81
+
         SEG code
 ; ===
 ; Entry point for multi-load reading
@@ -112,12 +115,6 @@ mlclr1:
         STY $04,X
         DEX
         BPL mlclr1
-
-        LDX #$1C
-mlclr2:
-        STY $81,X
-        DEX
-        BPL mlclr2
 
 ; emulated loads bars
 startbars:
@@ -228,12 +225,6 @@ tvntsc:
         STY AUDV0
         STY COLUBK
 
-; Clear memory (skip $80 though as it still contains the requested multiload ID)
-clear:
-        STY $81,x
-        DEX
-        BPL clear
-
 ; Clear bank 0, page 7
         LDX #0
 clearp7:
@@ -247,20 +238,30 @@ clearp7:
         LDX #11
 copywaitforload:
         LDA waitforload,X
-        STA $F0,X
+        STA WAIT,X
         DEX
         BPL copywaitforload
 
 ; Move the multiload ID to A, then jump to wait-for-load
         LDA $80
-        JMP $F0
+        JMP WAIT
 
-; The load is done; copy the trampoline to RIOT RAM (6 bytes)
+afterload:
+
+; Clear parts of memory (skip $80 though as it still contains the requested multiload ID)
+        LDX #$1C
+        LDY #0
+clear:
+        STY $81,X
+        DEX
+        BPL clear
+
+; Copy the trampoline to RIOT RAM (6 bytes)
 prepareexec:
         LDX #6
 copyexec:
         LDA execute,X
-        STA $F0,X
+        STA TRAMPOLINE,X
         DEX
         BPL copyexec
 
@@ -273,9 +274,9 @@ copyexec:
         LDA $FFF1
 ; The entry point comes next; patch it into the trampoline
         LDX $FFF2
-        STX $F4
+        STX TRAMPOLINE+4
         LDX $FFF3
-        STX $F5
+        STX TRAMPOLINE+5
 
 ; Setup the registers (we have randomized A above)
         LDX #$FF
@@ -283,7 +284,7 @@ copyexec:
         TXS
 
 ; jump into the trampoline and continue execution
-        JMP $F0
+        JMP TRAMPOLINE
 
 ; ===
 ; Wait for the cartridge emulation to load the new multiload into RAM.
@@ -300,7 +301,7 @@ wait:
         BNE wait
 ; We got 0? The cartridge is driving the bus again, so the load is finished, and
 ; we can continue
-        JMP prepareexec
+        JMP afterload
 
 ; ===
 ; Trampoline
