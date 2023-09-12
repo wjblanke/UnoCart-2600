@@ -1,0 +1,38 @@
+name: Build and release
+on:
+  push:
+    tags:
+      - 'v[0-9]+'
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  TOOLCHAIN_URL: https://developer.arm.com/-/media/Files/downloads/gnu-rm/10.3-2021.10/gcc-arm-none-eabi-10.3-2021.10-x86_64-linux.tar.bz2
+jobs:
+  build_and_release:
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Cache
+        uses: actions/cache@v3
+        with:
+          path: ~/toolchain
+          key: ${{env.TOOLCHAIN_URL}}
+      - name: Install compiler
+        run: |
+          export TOOLCHAIN_URL=${{env.TOOLCHAIN_URL}}
+          pushd ~
+          mkdir -p toolchain
+          cd toolchain
+          if test ! -f bin/arm-none-eabi-gcc; then wget $TOOLCHAIN_URL && tar -xjf *bz2 --strip 1; fi
+          popd
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Build
+        run: |
+          export PATH=$HOME/toolchain/bin:$PATH
+          make -C source/STM32firmware/Atari2600Cart bin hex
+          make -C source/STM32firmware/FirmwareUpdater -f Makefile.gnu bin
+      - name: Create release
+        run: |
+          gh release create ${{ github.ref_name}} -d -t "${{ github.ref_name }}"
+          gh release upload ${{ github.ref_name}} source/STM32firmware/Atari2600Cart/build/firmware.bin
+          gh release upload ${{ github.ref_name}} source/STM32firmware/Atari2600Cart/build/firmware.hex
+          gh release upload ${{ github.ref_name}} source/STM32firmware/FirmwareUpdater/build/update.bin
