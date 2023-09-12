@@ -1,5 +1,21 @@
 # Changelog
 
+## v18
+
+ * Fix Survival Island and probably other supercharger games.
+
+## v17
+
+ * Improve startup time.
+
+## v16
+
+ * Suppoer 3E+ with >16kB RAM.
+
+## v15
+
+ * 4kSC support.
+
 ## v14
 
  * Support for 3E+ (thanks to Wolfgang Stubig / AlNafuur on AAge)
