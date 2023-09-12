@@ -36,6 +36,7 @@ DRIVERS = \
 	$(BUILDDIR)/driver_2k.bin \
 	$(BUILDDIR)/driver_4k.bin \
 	$(BUILDDIR)/driver_4ksc.bin \
+	$(BUILDDIR)/driver_bfsc.bin \
 	$(BUILDDIR)/driver_3ep_32k.bin
 
 CFLAGS = \
