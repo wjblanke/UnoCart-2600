@@ -50,7 +50,7 @@
 #ifdef BUS_DUMPER
 #define VERSION "BUSDUMPER 17"
 #else
-#define VERSION "R.EDWARDS 17"
+#define VERSION "R.EDWARDS 18"
 #endif
 
 /*************************************************************************
