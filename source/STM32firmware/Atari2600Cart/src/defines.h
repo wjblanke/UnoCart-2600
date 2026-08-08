@@ -29,10 +29,8 @@
 #define TM_DEFINES_H
 
 /* Put your global defines for all libraries here used in your project */
-/* Use SPI communication with SDCard */
-#define	FATFS_USE_SDIO			0
-
-#define FATFS_SPI				SPI2
-#define FATFS_SPI_PINSPACK		TM_SPI_PinsPack_2
+/* DevEBox / SDIO microSD: PC8-12 + PD2 (address bus is on GPIOB) */
+#define	FATFS_USE_SDIO			1
+#define	FATFS_SDIO_4BIT			1
 
 #endif

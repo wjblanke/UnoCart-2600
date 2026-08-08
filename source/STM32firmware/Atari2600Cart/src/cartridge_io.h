@@ -3,7 +3,7 @@
 
 #include "stm32f4xx.h"
 
-#define ADDR_IN GPIOD->IDR
+#define ADDR_IN GPIOB->IDR
 #define DATA_IN GPIOE->IDR
 #define DATA_OUT GPIOE->ODR
 #define CONTROL_IN GPIOC->IDR
