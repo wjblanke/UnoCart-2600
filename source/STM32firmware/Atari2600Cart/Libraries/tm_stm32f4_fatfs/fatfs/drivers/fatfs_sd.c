@@ -244,6 +244,9 @@ static BYTE send_cmd (		/* Return value: R1 resp (bit7==1:Failed to send) */
 void TM_FATFS_InitPins(void) {
 	/* CS pin */
 	TM_GPIO_Init(FATFS_CS_PORT, FATFS_CS_PIN, TM_GPIO_Mode_OUT, TM_GPIO_OType_PP, TM_GPIO_PuPd_UP, TM_GPIO_Speed_Low);
+
+	/* Unused SD DAT1/DAT2 in SPI mode (SDIO PC9/PC10): keep pulled up */
+	TM_GPIO_Init(GPIOC, GPIO_PIN_9 | GPIO_PIN_10, TM_GPIO_Mode_IN, TM_GPIO_OType_PP, TM_GPIO_PuPd_UP, TM_GPIO_Speed_Low);
 	
 	/* Detect pin */
 #if FATFS_USE_DETECT_PIN > 0
