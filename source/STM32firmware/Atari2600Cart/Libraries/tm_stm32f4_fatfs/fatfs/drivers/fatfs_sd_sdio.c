@@ -3012,10 +3012,12 @@ void SD_LowLevel_DeInit(void) {
  */
 void SD_LowLevel_Init (void) {
 #if FATFS_SDIO_4BIT == 1
-	TM_GPIO_InitAlternate(GPIOC, GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_11 | GPIO_PIN_12, TM_GPIO_OType_PP, TM_GPIO_PuPd_UP, TM_GPIO_Speed_Fast, GPIO_AF_SDIO);
+	/* DAT0-DAT3: pull-ups. CLK (PC12): host-driven, no pull. */
+	TM_GPIO_InitAlternate(GPIOC, GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_11, TM_GPIO_OType_PP, TM_GPIO_PuPd_UP, TM_GPIO_Speed_Fast, GPIO_AF_SDIO);
 #else
-	TM_GPIO_InitAlternate(GPIOC, GPIO_PIN_8 | GPIO_PIN_12, TM_GPIO_OType_PP, TM_GPIO_PuPd_UP, TM_GPIO_Speed_Fast, GPIO_AF_SDIO);
+	TM_GPIO_InitAlternate(GPIOC, GPIO_PIN_8, TM_GPIO_OType_PP, TM_GPIO_PuPd_UP, TM_GPIO_Speed_Fast, GPIO_AF_SDIO);
 #endif
+	TM_GPIO_InitAlternate(GPIOC, GPIO_PIN_12, TM_GPIO_OType_PP, TM_GPIO_PuPd_NOPULL, TM_GPIO_Speed_Fast, GPIO_AF_SDIO);
 
 	TM_GPIO_InitAlternate(GPIOD, GPIO_PIN_2, TM_GPIO_OType_PP, TM_GPIO_PuPd_UP, TM_GPIO_Speed_Fast, GPIO_AF_SDIO);
 
