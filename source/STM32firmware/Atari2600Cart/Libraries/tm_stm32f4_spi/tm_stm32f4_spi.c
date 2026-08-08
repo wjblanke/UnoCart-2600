@@ -481,8 +481,9 @@ void TM_SPI2_INT_InitPins(TM_SPI_PinsPack_t pinspack) {
 #endif
 #if defined(GPIOB)
 	if (pinspack == TM_SPI_PinsPack_2) {
-		/* Internal pull-ups for SD card SPI (SCK/MISO/MOSI) */
-		TM_GPIO_InitAlternate(GPIOB, GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15, TM_GPIO_OType_PP, TM_GPIO_PuPd_UP, TM_GPIO_Speed_High, GPIO_AF_SPI2);
+		/* SCK: no pull (host-driven). MISO/MOSI: internal pull-ups for SD card. */
+		TM_GPIO_InitAlternate(GPIOB, GPIO_PIN_13, TM_GPIO_OType_PP, TM_GPIO_PuPd_NOPULL, TM_GPIO_Speed_High, GPIO_AF_SPI2);
+		TM_GPIO_InitAlternate(GPIOB, GPIO_PIN_14 | GPIO_PIN_15, TM_GPIO_OType_PP, TM_GPIO_PuPd_UP, TM_GPIO_Speed_High, GPIO_AF_SPI2);
 	}
 #endif
 #if defined(GPIOI)
