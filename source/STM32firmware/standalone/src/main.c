@@ -32,10 +32,10 @@ extern void emulate_cartridge(uint8_t* cart_rom, uint8_t* ram);
 
 GPIO_InitTypeDef  GPIO_InitStructure;
 
-/* Input/Output data GPIO pins on PE{8..15} */
+/* Input/Output data GPIO pins on PD{8..15} */
 void config_gpio_data(void) {
-	/* GPIOE Periph clock enable */
-	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOE, ENABLE);
+	/* GPIOD Periph clock enable */
+	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOD, ENABLE);
 
 	/* Configure GPIO Settings */
 	GPIO_InitStructure.GPIO_Pin =
@@ -45,13 +45,13 @@ void config_gpio_data(void) {
 	GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
 	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_25MHz;
 	GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_NOPULL;
-	GPIO_Init(GPIOE, &GPIO_InitStructure);
+	GPIO_Init(GPIOD, &GPIO_InitStructure);
 }
 
-/* Input Address GPIO pins on PD{0..15} */
+/* Input Address GPIO pins on PE{0..15} (A0-A12 on PE0-PE12) */
 void config_gpio_addr(void) {
-	/* GPIOD Periph clock enable */
-	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOD, ENABLE);
+	/* GPIOE Periph clock enable */
+	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOE, ENABLE);
 
 	/* Configure GPIO Settings */
 	GPIO_InitStructure.GPIO_Pin =
@@ -63,14 +63,14 @@ void config_gpio_addr(void) {
 	GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
 	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_100MHz;
 	GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_DOWN;
-	GPIO_Init(GPIOD, &GPIO_InitStructure);
+	GPIO_Init(GPIOE, &GPIO_InitStructure);
 }
 
 int main(void)
 {
-	/* In/Out: PE{8..15} */
+	/* In/Out: PD{8..15} */
 	config_gpio_data();
-	/* In: PD{0..15} */
+	/* In: PE{0..15} */
 	config_gpio_addr();
 
 	emulate_cartridge((uint8_t*)FLASH_BASE + 16*1024, ram);

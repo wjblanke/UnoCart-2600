@@ -21,15 +21,14 @@ SOURCES = \
 	Libraries/tm_stm32f4_delay/tm_stm32f4_delay.c \
 	Libraries/STM32F4xx_StdPeriph_Driver/src/stm32f4xx_rcc.c \
 	Libraries/STM32F4xx_StdPeriph_Driver/src/stm32f4xx_gpio.c \
+	Libraries/STM32F4xx_StdPeriph_Driver/src/stm32f4xx_spi.c \
 	Libraries/STM32F4xx_StdPeriph_Driver/src/stm32f4xx_flash.c \
-	Libraries/STM32F4xx_StdPeriph_Driver/src/stm32f4xx_sdio.c \
-	Libraries/STM32F4xx_StdPeriph_Driver/src/stm32f4xx_dma.c \
-	Libraries/STM32F4xx_StdPeriph_Driver/src/misc.c \
+	Libraries/tm_stm32f4_spi/tm_stm32f4_spi.c \
 	Libraries/tm_stm32f4_gpio/tm_stm32f4_gpio.c \
 	Libraries/tm_stm32f4_fatfs/tm_stm32f4_fatfs.c \
 	Libraries/tm_stm32f4_fatfs/fatfs/diskio.c \
 	Libraries/tm_stm32f4_fatfs/fatfs/option/ccsbcs.c \
-	Libraries/tm_stm32f4_fatfs/fatfs/drivers/fatfs_sd_sdio.c \
+	Libraries/tm_stm32f4_fatfs/fatfs/drivers/fatfs_sd.c \
 	Libraries/tm_stm32f4_fatfs/fatfs/option/syscall.c \
 	Libraries/tm_stm32f4_fatfs/fatfs/ff.c \
 	src/cartridge_firmware.c \
@@ -54,7 +53,8 @@ INCLUDES = \
 	-ILibraries/tm_stm32f4_fatfs/fatfs \
 	-ILibraries/tm_stm32f4_fatfs/fatfs/drivers \
 	-ILibraries/tm_stm32f4_delay \
-	-ILibraries/tm_stm32f4_gpio
+	-ILibraries/tm_stm32f4_gpio \
+	-ILibraries/tm_stm32f4_spi
 
 GARBAGE = $(DEPDIR) $(BUILDDIR)
 

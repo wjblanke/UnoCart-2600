@@ -618,10 +618,10 @@ int identify_cartridge(char *filename, char* long_filename)
 
 GPIO_InitTypeDef  GPIO_InitStructure;
 
-/* Input/Output data GPIO pins on PE{8..15} */
+/* Input/Output data GPIO pins on PD{8..15} */
 void config_gpio_data(void) {
-	/* GPIOE Periph clock enable */
-	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOE, ENABLE);
+	/* GPIOD Periph clock enable */
+	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOD, ENABLE);
 
 	/* Configure GPIO Settings */
 	GPIO_InitStructure.GPIO_Pin =
@@ -631,13 +631,13 @@ void config_gpio_data(void) {
 	GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
 	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_25MHz;
 	GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_NOPULL;
-	GPIO_Init(GPIOE, &GPIO_InitStructure);
+	GPIO_Init(GPIOD, &GPIO_InitStructure);
 }
 
-/* Input Address GPIO pins on PB{0..15} (A0..A12 used; frees PD for SDIO) */
+/* Input Address GPIO pins on PE{0..15} (A0-A12 on PE0-PE12) */
 void config_gpio_addr(void) {
-	/* GPIOB Periph clock enable */
-	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOB, ENABLE);
+	/* GPIOE Periph clock enable */
+	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOE, ENABLE);
 
 	/* Configure GPIO Settings */
 	GPIO_InitStructure.GPIO_Pin =
@@ -649,17 +649,7 @@ void config_gpio_addr(void) {
 	GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
 	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_100MHz;
 	GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_DOWN;
-	GPIO_Init(GPIOB, &GPIO_InitStructure);
-
-	/* Keep onboard W25Q16 (DevEBox) deselected; shares PB3/4/5 with address */
-	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOA, ENABLE);
-	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_15;
-	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_OUT;
-	GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
-	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;
-	GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_UP;
-	GPIO_Init(GPIOA, &GPIO_InitStructure);
-	GPIO_SetBits(GPIOA, GPIO_Pin_15);
+	GPIO_Init(GPIOE, &GPIO_InitStructure);
 }
 
 /* Input Signals GPIO pins - PC0, PC1 (PC0=0 PAL60, PC1=0 PAL) */

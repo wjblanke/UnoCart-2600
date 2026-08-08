@@ -3,11 +3,14 @@
 
 #include "stm32f4xx.h"
 
-#define ADDR_IN GPIOB->IDR
-#define DATA_IN GPIOE->IDR
-#define DATA_OUT GPIOE->ODR
+/* Address bus A0-A12 on PE0-PE12 (PE13-PE15 unused, pulled down). */
+#define ADDR_IN GPIOE->IDR
+/* Data bus D0-D7 on PD8-PD15 (high byte). Low PD pins left free (e.g. PD2 SDIO_CMD). */
+#define DATA_IN GPIOD->IDR
+#define DATA_OUT GPIOD->ODR
 #define CONTROL_IN GPIOC->IDR
-#define SET_DATA_MODE_IN GPIOE->MODER = 0x00000000;
-#define SET_DATA_MODE_OUT GPIOE->MODER = 0x55550000;
+/* Only touch MODER for pins 8-15; preserve PD0-PD7 (SDIO, etc.). */
+#define SET_DATA_MODE_IN  GPIOD->MODER = (GPIOD->MODER & 0x0000FFFFu);
+#define SET_DATA_MODE_OUT GPIOD->MODER = (GPIOD->MODER & 0x0000FFFFu) | 0x55550000u;
 
 #endif // CARTRIDGE_IO_H
