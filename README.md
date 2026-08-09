@@ -1,3 +1,5 @@
+<img width="4000" height="3000" alt="PXL_20260809_193644739" src="https://github.com/user-attachments/assets/c3d5af26-9860-44f7-9cf4-6c502741c74e" />
+
 # UnoCart-2600 (DevEBox fork)
 
 Fork of [DirtyHairy/UnoCart-2600](https://github.com/DirtyHairy/UnoCart-2600) (originally by Robin Edwards / electrotrains), adapted for the **[MCUDEV DevEBox STM32F407VGT6](https://github.com/mcauser/MCUDEV_DEVEBOX_F407VGT6)** board and its onboard microSD socket.
