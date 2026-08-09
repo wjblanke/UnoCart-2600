@@ -44,8 +44,22 @@ uint8_t* get_menu_ram() {
 bool comms_enabled = false;
 
 /* Drive data for the whole A12-high window (like a real cart OE).
- * The old "wait for identical ADDR_IN reads, then hold until exact change"
- * fails when lower address bits are noisy (breadboard / long wires). */
+ * Menu commands are LDA $1E00,X (item index in low address bits) — require a
+ * few identical samples before accepting, or noisy A0-A7 selects the wrong file.
+ */
+static int cart_cmd_stable(uint16_t *addr_out) {
+	uint16_t a0 = ADDR_IN;
+	if ((a0 & 0x1F00) != 0x1E00)
+		return 0;
+	uint16_t a1 = ADDR_IN;
+	uint16_t a2 = ADDR_IN;
+	if (a0 == a1 && a1 == a2 && (a2 & 0x1F00) == 0x1E00) {
+		*addr_out = a2;
+		return 1;
+	}
+	return 0;
+}
+
 int emulate_firmware_cartridge() {
 	__disable_irq();	// Disable interrupts
 	uint16_t addr;
@@ -57,7 +71,8 @@ int emulate_firmware_cartridge() {
 			if (comms_enabled)
 			{	// normal mode, once the cartridge code has done its init.
 				// on a 7800, we know we are in 2600 mode now.
-				if ((addr & 0x1F00) == 0x1E00) break;	// atari 2600 has sent a command
+				if (cart_cmd_stable(&addr))
+					break;
 				if (addr >= 0x1800 && addr < 0x1C00)
 					DATA_OUT_SET(((uint16_t)menu_ram[addr&0x3FF])<<8);
 				else if ((addr & 0x1FF0) == CART_STATUS_BYTES)
@@ -67,7 +82,8 @@ int emulate_firmware_cartridge() {
 				SET_DATA_MODE_OUT
 				while (ADDR_IN & 0x1000) {
 					addr = ADDR_IN;
-					if ((addr & 0x1F00) == 0x1E00) break;
+					if (cart_cmd_stable(&addr))
+						goto got_cmd;
 					if (addr >= 0x1800 && addr < 0x1C00)
 						DATA_OUT_SET(((uint16_t)menu_ram[addr&0x3FF])<<8);
 					else if ((addr & 0x1FF0) == CART_STATUS_BYTES)
@@ -76,7 +92,6 @@ int emulate_firmware_cartridge() {
 						DATA_OUT_SET(((uint16_t)firmware_rom[addr&0xFFF])<<8);
 				}
 				SET_DATA_MODE_IN
-				if ((addr & 0x1F00) == 0x1E00) break;
 			}
 			else
 			{	// prior to an access to $1FF4, we might be running on a 7800 with the CPU at
@@ -94,6 +109,8 @@ int emulate_firmware_cartridge() {
 		}
 	}
 
+got_cmd:
+	SET_DATA_MODE_IN
 	__enable_irq();
 	return addr;
 }

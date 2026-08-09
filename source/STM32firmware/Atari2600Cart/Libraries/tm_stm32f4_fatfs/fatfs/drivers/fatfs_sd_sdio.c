@@ -301,12 +301,25 @@ DSTATUS TM_FATFS_SD_SDIO_disk_initialize(void) {
 	
 	SD_LowLevel_DeInit();
 	SD_LowLevel_Init();
-	
-	//Check disk initialized
-	if (SD_Init() == SD_OK) {
-		TM_FATFS_SD_SDIO_Stat &= ~STA_NOINIT;	/* Clear STA_NOINIT flag */
-	} else {
-		TM_FATFS_SD_SDIO_Stat |= STA_NOINIT;
+
+	/* Card power / CMD0 can fail intermittently on DevEBox — retry a few times. */
+	{
+		int attempt;
+		SD_Error err = SD_ERROR;
+		for (attempt = 0; attempt < 5; attempt++) {
+			if (attempt)
+				Delayms(50);
+			err = SD_Init();
+			if (err == SD_OK)
+				break;
+			SD_LowLevel_DeInit();
+			SD_LowLevel_Init();
+		}
+		if (err == SD_OK) {
+			TM_FATFS_SD_SDIO_Stat &= ~STA_NOINIT;	/* Clear STA_NOINIT flag */
+		} else {
+			TM_FATFS_SD_SDIO_Stat |= STA_NOINIT;
+		}
 	}
 	//Check write protected
 	if (!TM_FATFS_SDIO_WriteEnabled()) {
@@ -535,10 +548,11 @@ SD_Error SD_Init (void)
 	if (errorstatus == SD_OK) {
 		logf ("SD_SelectDeselect OK\r\n");
 #if FATFS_SDIO_4BIT == 1
-		//4 bit mode
+		/* Prefer 4-bit; fall back to 1-bit if wide-bus fails (noisy DAT1-3). */
 		errorstatus = SD_EnableWideBusOperation (SDIO_BusWide_4b);
+		if (errorstatus != SD_OK)
+			errorstatus = SD_EnableWideBusOperation (SDIO_BusWide_1b);
 #else
-		//1 bit mode
 		errorstatus = SD_EnableWideBusOperation (SDIO_BusWide_1b);
 #endif
 	}
@@ -642,6 +656,9 @@ SD_Error SD_PowerON (void)
 
 	/*!< Enable SDIO Clock */
 	SDIO_ClockCmd (ENABLE);
+
+	/* >=74 SD clocks + card power settle before first CMD0 */
+	Delayms(2);
 
 	/*!< CMD0: GO_IDLE_STATE ---------------------------------------------------*/
 	/*!< No CMD response required */

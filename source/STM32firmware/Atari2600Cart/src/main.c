@@ -393,14 +393,23 @@ void init() {
 
 int read_directory(char *path) {
 	int ret = 0;
+	int attempt;
 	num_dir_entries = 0;
 	DIR_ENTRY *dst = (DIR_ENTRY *)&dir_entries[0];
 
 	FATFS FatFs;
 	TM_DELAY_Init();
-	if (f_mount(&FatFs, "", 1) == FR_OK) {
+
+	for (attempt = 0; attempt < 3 && !ret; attempt++) {
+		if (attempt)
+			Delayms(100);
+		if (f_mount(&FatFs, "", 1) != FR_OK)
+			continue;
+
 		DIR dir;
 		if (f_opendir(&dir, path) == FR_OK) {
+			num_dir_entries = 0;
+			dst = (DIR_ENTRY *)&dir_entries[0];
 			if (strlen(path))
 			{	// not root directory, add pseudo ".." to go up a dir
 				dst->isDir = 1;
@@ -1502,6 +1511,10 @@ int main(void)
 		else
 		{
 			int sel = ret - CART_CMD_SEL_ITEM_n;
+			if (sel < 0 || sel >= num_dir_entries) {
+				set_menu_status_msg("BAD SELECT");
+				continue;
+			}
 			DIR_ENTRY *d = &dir_entries[sel];
 
 			if (d->isDir)

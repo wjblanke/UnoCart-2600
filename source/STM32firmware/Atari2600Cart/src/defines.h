@@ -32,8 +32,13 @@
 
 /* MCUDEV DevEBox F407VGT6 microSD: SDIO 4-bit
  *   D0=PC8, D1=PC9, D2=PC10, D3=PC11, CK=PC12, CMD=PD2
+ *   Card-detect pin is NC on this board — do not use PB6 CD.
  */
 #define FATFS_USE_SDIO			1
 #define FATFS_SDIO_4BIT			1
+#define FATFS_USE_DETECT_PIN		0
+#define FATFS_USE_WRITEPROTECT_PIN	0
+/* SDIO_CK = 48MHz / (DIV+2). 0x01=16MHz was flaky; 0x04≈8MHz is more reliable. */
+#define SDIO_TRANSFER_CLK_DIV		((uint8_t)0x04)
 
 #endif

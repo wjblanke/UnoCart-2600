@@ -38,7 +38,7 @@ GPIO details (`cartridge_io.h`, `main.c` in both `Atari2600Cart` and `standalone
 
 Upstream menu emulation waited for two identical `ADDR_IN` samples, then drove data only until the address changed exactly. On breadboard / long-wire setups that makes lower address bits noisy enough that the MCU rarely (or never) drives **PD8–PD15**, so the TV stays blank even when **PE12 (A12)** looks high.
 
-This fork’s menu ROM path drives data for the whole **A12-high** window and updates the byte as the address changes (closer to a real cart OE). Implemented in `cartridge_firmware.c` (`emulate_firmware_cartridge`).
+This fork’s menu ROM path drives data for the whole **A12-high** window and updates the byte as the address changes (closer to a real cart OE). Menu **commands** (`LDA $1E00,X` to select item X) still require a few identical address samples so noisy A0–A7 do not open the wrong file. Implemented in `cartridge_firmware.c` (`emulate_firmware_cartridge`).
 
 Game-cart drivers still use the older address-stability loops; if a title glitches after selection, the same A12-gated approach may need to be applied there.
 
@@ -62,7 +62,9 @@ Defines in `source/STM32firmware/Atari2600Cart/src/defines.h`:
 
 Makefile builds `fatfs_sd_sdio.c` plus `stm32f4xx_sdio`, `stm32f4xx_dma`, and `misc` (SPI SD path removed from the CLI build).
 
-Init runs 1-bit then switches to 4-bit wide bus. Transfer clock is set for reliable SDIO on this board (init ~400 kHz, transfers faster via SDIOCLK from PLLQ).
+Init runs 1-bit then switches to 4-bit wide bus (falls back to 1-bit if wide-bus fails). Transfer clock defaults to ~8 MHz (`SDIO_TRANSFER_CLK_DIV` in `defines.h`) for reliability on the onboard socket; init stays ~400 kHz. `disk_initialize` and directory mounts retry a few times if the first attempt fails.
+
+The DevEBox microSD **card-detect pin is NC** — `FATFS_USE_DETECT_PIN` is forced off so a floating PB6 is not mistaken for “no card.”
 
 ### GPIO pull-ups (SDIO)
 
