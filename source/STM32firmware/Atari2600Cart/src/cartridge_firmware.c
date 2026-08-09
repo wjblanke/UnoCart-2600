@@ -43,14 +43,15 @@ uint8_t* get_menu_ram() {
 // spurious reads until it has started the cartridge in 2600 mode.
 bool comms_enabled = false;
 
+/* Drive data for the whole A12-high window (like a real cart OE).
+ * The old "wait for identical ADDR_IN reads, then hold until exact change"
+ * fails when lower address bits are noisy (breadboard / long wires). */
 int emulate_firmware_cartridge() {
 	__disable_irq();	// Disable interrupts
-	uint16_t addr, addr_prev = 0;
+	uint16_t addr;
 	while (1)
 	{
-		while ((addr = ADDR_IN) != addr_prev)
-			addr_prev = addr;
-		// got a stable address
+		addr = ADDR_IN;
 		if (addr & 0x1000)
 		{ // A12 high
 			if (comms_enabled)
@@ -58,27 +59,37 @@ int emulate_firmware_cartridge() {
 				// on a 7800, we know we are in 2600 mode now.
 				if ((addr & 0x1F00) == 0x1E00) break;	// atari 2600 has sent a command
 				if (addr >= 0x1800 && addr < 0x1C00)
-					DATA_OUT = ((uint16_t)menu_ram[addr&0x3FF])<<8;
+					DATA_OUT_SET(((uint16_t)menu_ram[addr&0x3FF])<<8);
 				else if ((addr & 0x1FF0) == CART_STATUS_BYTES)
-					DATA_OUT = ((uint16_t)menu_status[addr&0xF])<<8;
+					DATA_OUT_SET(((uint16_t)menu_status[addr&0xF])<<8);
 				else
-					DATA_OUT = ((uint16_t)firmware_rom[addr&0xFFF])<<8;
+					DATA_OUT_SET(((uint16_t)firmware_rom[addr&0xFFF])<<8);
 				SET_DATA_MODE_OUT
-				// wait for address bus to change
-				while (ADDR_IN == addr) ;
+				while (ADDR_IN & 0x1000) {
+					addr = ADDR_IN;
+					if ((addr & 0x1F00) == 0x1E00) break;
+					if (addr >= 0x1800 && addr < 0x1C00)
+						DATA_OUT_SET(((uint16_t)menu_ram[addr&0x3FF])<<8);
+					else if ((addr & 0x1FF0) == CART_STATUS_BYTES)
+						DATA_OUT_SET(((uint16_t)menu_status[addr&0xF])<<8);
+					else
+						DATA_OUT_SET(((uint16_t)firmware_rom[addr&0xFFF])<<8);
+				}
 				SET_DATA_MODE_IN
+				if ((addr & 0x1F00) == 0x1E00) break;
 			}
 			else
 			{	// prior to an access to $1FF4, we might be running on a 7800 with the CPU at
 				// ~1.8MHz so we've got less time than usual - keep this short.
-				DATA_OUT = ((uint16_t)firmware_rom[addr&0xFFF])<<8;
+				DATA_OUT_SET(((uint16_t)firmware_rom[addr&0xFFF])<<8);
 				SET_DATA_MODE_OUT
-				// wait for address bus to change
-				while (ADDR_IN == addr) ;
+				while (ADDR_IN & 0x1000) {
+					addr = ADDR_IN;
+					DATA_OUT_SET(((uint16_t)firmware_rom[addr&0xFFF])<<8);
+					if (addr == 0x1FF4)
+						comms_enabled = true;
+				}
 				SET_DATA_MODE_IN
-
-				if (addr == 0x1FF4)
-					comms_enabled = true;
 			}
 		}
 	}

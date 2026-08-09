@@ -21,9 +21,26 @@ To free **PD2** for SDIO CMD (and avoid fighting the Atari address bus), the car
 | Data D0–D7 | PE8–PE15 | **PD8–PD15** |
 | Video mode straps | PC0 / PC1 | Unchanged (PC0=PAL60, PC1=PAL) |
 
-`SET_DATA_MODE_IN` / `SET_DATA_MODE_OUT` only change **PD8–PD15** MODER bits so **PD0–PD7** (including SDIO CMD on PD2) are preserved during cart emulation.
+Wiring checklist (Atari cart → MCU):
 
-Updated in both `Atari2600Cart` and `standalone` (`cartridge_io.h`, GPIO setup in `main.c`).
+| Atari | MCU |
+|-------|-----|
+| A0–A12 | PE0–PE12 |
+| D0–D7 | PD8–PD15 |
+| +5V / GND | Board 5V input / GND (MCU runs at 3.3 V; level-shift or series resistors as in your breakout) |
+
+GPIO details (`cartridge_io.h`, `main.c` in both `Atari2600Cart` and `standalone`):
+
+- `SET_DATA_MODE_IN` / `SET_DATA_MODE_OUT` only change **PD8–PD15** MODER bits so **PD0–PD7** (including SDIO CMD on PD2) stay intact during cart emulation.
+- `DATA_OUT_SET()` writes only the high byte of GPIOD ODR so SDIO pins are not cleared every bus cycle.
+
+### Menu bus timing (A12-gated drive)
+
+Upstream menu emulation waited for two identical `ADDR_IN` samples, then drove data only until the address changed exactly. On breadboard / long-wire setups that makes lower address bits noisy enough that the MCU rarely (or never) drives **PD8–PD15**, so the TV stays blank even when **PE12 (A12)** looks high.
+
+This fork’s menu ROM path drives data for the whole **A12-high** window and updates the byte as the address changes (closer to a real cart OE). Implemented in `cartridge_firmware.c` (`emulate_firmware_cartridge`).
+
+Game-cart drivers still use the older address-stability loops; if a title glitches after selection, the same A12-gated approach may need to be applied there.
 
 ### SD card: SPI → SDIO 4-bit
 
@@ -45,25 +62,34 @@ Defines in `source/STM32firmware/Atari2600Cart/src/defines.h`:
 
 Makefile builds `fatfs_sd_sdio.c` plus `stm32f4xx_sdio`, `stm32f4xx_dma`, and `misc` (SPI SD path removed from the CLI build).
 
+Init runs 1-bit then switches to 4-bit wide bus. Transfer clock is set for reliable SDIO on this board (init ~400 kHz, transfers faster via SDIOCLK from PLLQ).
+
 ### GPIO pull-ups (SDIO)
 
 Internal pull-ups are enabled on **D0–D3** and **CMD**. **CK (PC12)** is configured with **no pull** (host-driven clock).
 
+### Clock
+
+System clock is **HSI → PLL at 168 MHz** (SDIOCLK 48 MHz via PLLQ). This avoids depending on the Discovery-oriented HSE setup; the DevEBox has an 8 MHz HSE, but this firmware does not require it for SYSCLK.
+
 ### Building
 
-From `source/STM32firmware/Atari2600Cart` with an Arm GNU toolchain (`arm-none-eabi-gcc`):
+From `source/STM32firmware/Atari2600Cart` with an Arm GNU toolchain (`arm-none-eabi-gcc`, with newlib). A Darwin aarch64 toolchain may be unpacked under `tools/` in this repo for local builds:
 
 ```bash
+export PATH="/path/to/arm-none-eabi/bin:$PATH"
+cd source/STM32firmware/Atari2600Cart
 make clean
 make bin hex    # outputs in build/firmware.bin and build/firmware.hex
 ```
 
-Flash with your preferred DFU/SWD tool for the DevEBox (BOOT0 DFU is common on that board; `make flash` still expects `st-flash` if you use ST-Link).
+Flash with ST-Link (`make flash` / `st-flash`) or DFU (BOOT0) as you prefer on the DevEBox.
 
 ### Compatibility notes
 
 - **Not compatible** with stock Discovery UnoCart breakouts without rewiring address/data to PE / PD8–15.
 - Onboard DevEBox W25Q16 SPI flash and TFT header are unused by this firmware; they must not conflict with your cart wiring.
+- Keep cart wiring short and grounded well; noisy A0–A11 was the main failure mode before the menu bus-timing change.
 - SD card: FAT or FAT32, as upstream.
 
 ---
@@ -122,4 +148,4 @@ Credits
 -------
 * Design, hardware and firmware by Robin Edwards (electrotrains at atariage)
 * Additional work on firmware by Christian Speckner (DirtyHairy at atariage)
-* This fork: DevEBox STM32F407VGT6 port (SDIO microSD, remapped cart buses)
+* This fork: DevEBox STM32F407VGT6 port (SDIO microSD, remapped cart buses, A12-gated menu bus drive)
