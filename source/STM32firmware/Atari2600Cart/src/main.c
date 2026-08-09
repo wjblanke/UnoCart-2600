@@ -1458,11 +1458,11 @@ void bus_dumper() {
 
 int main(void)
 {
-	/* In: PD{0..15} */
+	/* In: PE{0..15} address (A0-A12 on PE0-PE12) */
 	config_gpio_addr();
 	/* In: Other Cart Input Signals - PC{0..1} */
 	config_gpio_sig();
-	/* In/Out: PE{8..15} */
+	/* In/Out: PD{8..15} data (D0-D7) */
 	config_gpio_data();
 
 	if (!(GPIOC->IDR & 0x0001))
