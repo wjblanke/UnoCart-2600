@@ -56,9 +56,26 @@ INCLUDES = \
 	-ILibraries/tm_stm32f4_delay \
 	-ILibraries/tm_stm32f4_gpio
 
+# MovieCart backend (src/moviecart, from moviecart/firmware/stm32). Its own SDIO
+# driver and globals would clash with UnoCart's, so it is linked into one
+# relocatable object that exports only moviecart_launch().
+MC_SOURCES = \
+	src/moviecart/mc_main.c \
+	src/moviecart/core.c \
+	src/moviecart/bus_service.c \
+	src/moviecart/sd_reader.c \
+	src/moviecart/mc_sd_sdio.c \
+	src/moviecart/pff.c \
+	src/moviecart/frame.c \
+	src/moviecart/update.c \
+	src/moviecart/mclog.c \
+	src/moviecart/title_data.c
+
 GARBAGE = $(DEPDIR) $(BUILDDIR)
 
 OBJECTS = $(addprefix $(BUILDDIR)/, $(addsuffix .o, $(basename $(SOURCES))))
+MC_OBJECTS = $(addprefix $(BUILDDIR)/, $(addsuffix .o, $(basename $(MC_SOURCES))))
+MC_OBJECT = $(BUILDDIR)/moviecart.o
 
 ELF = $(BUILDDIR)/firmware.elf
 HEX = $(BUILDDIR)/firmware.hex
@@ -79,6 +96,28 @@ CFLAGS = \
 	-fdata-sections \
 	$(INCLUDES)
 
+# The MovieCart build's flags; core.c's extra -fno-* keep its dispatch code in
+# the shape the bus timing was measured with.
+MC_CFLAGS = \
+	-MT $@ -MMD -MP -MF $(DEPDIR)/$*.d \
+	-DMOVIECART_NO_LOG=1 \
+	-DMOVIECART_NO_LED=1 \
+	-ffreestanding -fno-common \
+	-O2 -fno-tree-vrp -g \
+	-mcpu=cortex-m4 -mthumb \
+	-mfpu=fpv4-sp-d16 -mhard-float \
+	-DSTM32F4XX \
+	-DSTM32F40XX \
+	-DUSE_STM32F4_DISCOVERY \
+	-DHSE_VALUE=8000000 \
+	-DUSE_STDPERIPH_DRIVER \
+	-ffunction-sections \
+	-fdata-sections \
+	-Isrc/moviecart \
+	$(INCLUDES)
+
+$(BUILDDIR)/src/moviecart/core.o: MC_CFLAGS += -fno-gcse -fno-crossjumping -fno-toplevel-reorder
+
 LDSCRIPT = stm32f4_flash.ld
 LDFLAGS += \
 	-T$(LDSCRIPT) \
@@ -98,8 +137,18 @@ $(BIN): $(ELF)
 $(HEX): $(ELF)
 	$(OBJCOPY) -O ihex $< $@
 
-$(ELF): $(OBJECTS) $(LDSCRIPT)
-	$(LD) $(LDFLAGS) -o $@ $(OBJECTS) $(LDLIBS)
+$(ELF): $(OBJECTS) $(MC_OBJECT) $(LDSCRIPT)
+	$(LD) $(LDFLAGS) -o $@ $(OBJECTS) $(MC_OBJECT) $(LDLIBS)
+
+$(MC_OBJECT): $(MC_OBJECTS)
+	$(LD) -r -nostdlib -o $@.tmp $(MC_OBJECTS)
+	$(OBJCOPY) --keep-global-symbol=moviecart_launch $@.tmp $@
+	rm -f $@.tmp
+
+$(MC_OBJECTS): $(BUILDDIR)/%.o: %.c
+	mkdir -p $(dir $@)
+	mkdir -p .depend/$(dir $@)
+	$(CC) -c $(MC_CFLAGS) $< -o $@
 
 $(BUILDDIR)/%.o: %.c
 	mkdir -p $(dir $@)
@@ -118,4 +167,4 @@ clean:
 
 .PHONY: bin elf hex flash clean
 
-include $(wildcard $(patsubst %,$(DEPDIR)/%.d,$(basename $(SOURCES))))
+include $(wildcard $(patsubst %,$(DEPDIR)/%.d,$(basename $(SOURCES) $(MC_SOURCES))))

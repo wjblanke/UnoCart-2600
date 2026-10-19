@@ -44,6 +44,7 @@
 #include "cartridge_df.h"
 #include "cartridge_ace.h"
 #include "cartridge_pp.h"
+#include "moviecart/moviecart.h"
 
 #define CCM_RAM ((uint8_t*)0x10000000)
 
@@ -97,6 +98,7 @@ int tv_mode;
 #define CART_TYPE_DFSC  28  // DFSC
 #define CART_TYPE_3EP	29	// 3E+ 1-64K + 32K ram
 #define CART_TYPE_4KSC  30  // 4k+SC
+#define CART_TYPE_MVC   31  // MovieCart field file, streamed from SD
 
 typedef struct {
 	const char *ext;
@@ -107,6 +109,7 @@ EXT_TO_CART_TYPE_MAP ext_to_cart_type_map[] = {
 	{"ROM", CART_TYPE_NONE},
 	{"BIN", CART_TYPE_NONE},
 	{"A26", CART_TYPE_NONE},
+	{"MVC", CART_TYPE_MVC},
 	{"2K", CART_TYPE_2K},
 	{"4K", CART_TYPE_4K},
 	{"F8", CART_TYPE_F8},
@@ -474,6 +477,8 @@ int identify_cartridge(char *filename, char* long_filename)
 	if (cart_type == CART_TYPE_NONE && (image_size % 8448) == 0)
 		cart_type = CART_TYPE_AR;
 	if (cart_type == CART_TYPE_AR) goto close;
+	// MovieCart streams the file itself, and it is far bigger than the buffer
+	if (cart_type == CART_TYPE_MVC) goto close;
 
 	// otherwise, read the file into the cartridge buffer
 	unsigned int bytes_to_read = image_size > (BUFFER_SIZE * 1024) ? (BUFFER_SIZE * 1024) : image_size;
@@ -1402,6 +1407,8 @@ void emulate_cartridge(int cart_type)
 	else if (cart_type == CART_TYPE_3EP){
 		emulate_3EPlus_cartridge(buffer, cart_size_bytes);
     }
+	else if (cart_type == CART_TYPE_MVC)
+		moviecart_launch(cartridge_image_path, reboot_into_cartridge);
 
 }
 

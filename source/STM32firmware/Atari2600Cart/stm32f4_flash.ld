@@ -40,7 +40,7 @@ _Min_Stack_Size = 0x400; /* required amount of stack */
 /* Specify the memory areas */
 MEMORY
 {
-  FLASH (rx)      : ORIGIN = 0x08000000, LENGTH = 64K
+  FLASH (rx)      : ORIGIN = 0x08000000, LENGTH = 128K
   RAM (xrw)       : ORIGIN = 0x20000000, LENGTH = 128K
   MEMORY_B1 (rx)  : ORIGIN = 0x60000000, LENGTH = 0K
   CCMRAM (rw)     : ORIGIN = 0x10000000, LENGTH = 64K
@@ -55,6 +55,19 @@ SECTIONS
     . = ALIGN(4);
     KEEP(*(.isr_vector)) /* Startup code */
     . = ALIGN(4);
+  } >FLASH
+
+  /*
+   * MovieCart's Atari bus critical path, directly after the fixed-size vector
+   * table and ART-line aligned (see HOTFUNC in src/moviecart/defines.h), so
+   * its addresses do not move when unrelated code changes.
+   */
+  .hottext :
+  {
+    . = ALIGN(16);
+    KEEP(*(.hottext))
+    KEEP(*(.hottext*))
+    . = ALIGN(16);
   } >FLASH
 
   /* The program code and other data goes into FLASH */
@@ -110,6 +123,34 @@ SECTIONS
     KEEP (*(.fini_array*))
     PROVIDE_HIDDEN (__fini_array_end = .);
   } >FLASH
+
+  /*
+   * MovieCart (build/moviecart.o) keeps its data and stack in CCM, which the
+   * DMA cannot reach and the bus loop reads over the D-bus. The startup code
+   * does not set these up: moviecart_launch() does, when a .MVC file is
+   * picked. These come before .data/.bss so they claim moviecart.o first.
+   */
+  _mc_sidata = LOADADDR(.mc_data);
+  .mc_data :
+  {
+    . = ALIGN(4);
+    _mc_sdata = .;
+    *moviecart.o(.data .data* .ccmram .ccmram*)
+    . = ALIGN(4);
+    _mc_edata = .;
+  } >CCMRAM AT> FLASH
+
+  .mc_bss (NOLOAD) :
+  {
+    . = ALIGN(4);
+    _mc_sbss = .;
+    *moviecart.o(.bss .bss* COMMON .ccmbss .ccmbss* .queueInfo .fileSystemInfo .updateInfo)
+    . = ALIGN(4);
+    _mc_ebss = .;
+  } >CCMRAM
+
+  _mc_estack = ORIGIN(CCMRAM) + LENGTH(CCMRAM);
+  ASSERT(_mc_ebss <= _mc_estack - 0x1000, "MovieCart CCM data leaves no room for its stack")
 
   /* used by the startup to initialize data */
   _sidata = LOADADDR(.data);
@@ -171,6 +212,30 @@ SECTIONS
     . = . + _Min_Stack_Size;
     . = ALIGN(4);
   } >RAM
+
+  /*
+   * MovieCart's DMA buffers. moviecart_launch() never returns to the menu,
+   * so .sram1 shares RAM with the heap, where the menu keeps its 96K ROM
+   * buffer. .sram2 is the start of SRAM2, below the menu's stack, so its
+   * field buffer sits on a different AHB slave from the one in .sram1.
+   */
+  .sram1 end (NOLOAD) :
+  {
+    . = ALIGN(16);
+    *(.sram1)
+    *(.sram1*)
+    . = ALIGN(16);
+    _mc_esram1 = .;
+  }
+  ASSERT(_mc_esram1 <= 0x2001C000, "MovieCart .sram1 runs into SRAM2")
+
+  .sram2 0x2001C000 (NOLOAD) :
+  {
+    *(.sram2)
+    *(.sram2*)
+    _mc_esram2 = .;
+  }
+  ASSERT(_mc_esram2 <= 0x2001E000, "MovieCart .sram2 too big")
 
   /* MEMORY_bank1 section, code must be located here explicitly            */
   /* Example: extern int foo(void) __attribute__ ((section (".mb1text"))); */

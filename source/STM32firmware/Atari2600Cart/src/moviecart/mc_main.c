@@ -1,0 +1,944 @@
+/**
+ * MovieCart on DevEBox STM32F407VGT6
+ *
+ * The Atari is served by UnoCart's polling loop. No IRQs: SDIO/DMA completion
+ * is polled in the driver; every SD wait yields, and outside relaxed mode a
+ * yield serves the cart until the next RamKernel entry.
+ *
+ * Built into the UnoCart firmware: the menu calls moviecart_launch() with the
+ * .MVC file the user picked, and this takes over the board for good.
+ */
+/* make NO_SD=1 builds the title-only baseline: the known-good reference. */
+#ifndef MOVIECART_ENABLE_SD
+#define MOVIECART_ENABLE_SD 1
+#endif
+
+#include <string.h>
+#include <stdint.h>
+#include <stdbool.h>
+
+#include "stm32f4xx.h"
+#include "stm32f4xx_rcc.h"
+#include "stm32f4xx_gpio.h"
+#include "misc.h"
+
+#include "defines.h"
+#include "cartridge_io.h"
+#include "bus_service.h"
+#include "moviecart_yield.h"
+#include "core.h"
+#include "pff.h"
+#include "update.h"
+#include "title_data.h"
+#include "sd_reader.h"
+#include "mclog.h"
+#include "moviecart.h"
+
+extern struct coreInfo r_coreInfo;
+extern struct fileSystemInfo fsInfo;
+
+struct stateVars state;
+/*
+ * Field buffers sit on opposite AHB SRAM slaves. Stack, r_coreInfo, and
+ * romData live in CCM (D-bus only), so they never share a port with DMA
+ * or GPIO. DMA writes the inactive buffer; display reads the other.
+ */
+uint8_t mr_buffer1[FIELD_SIZE] __attribute__((aligned(16), section(".sram1")));
+uint8_t mr_buffer2[FIELD_SIZE] __attribute__((aligned(16), section(".sram2")));
+
+void updateInit(void);
+
+static void
+dwt_init(void)
+{
+	CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+	DWT->CYCCNT = 0;
+	DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+/*
+ * Wait for the next RamKernel entry, i.e. the end of the next frame's cart
+ * section. Always a fresh entry, never one an earlier wait already passed, so
+ * relaxed work that follows starts at the beginning of a window.
+ */
+static void
+waitEndFrame(void)
+{
+	moviecart_wait_ram_kernel_entry();
+}
+
+
+/*
+ * Blink by counting the kernel's own frames, not wall-clock milliseconds.
+ *
+ * Blinks used to be timed by moviecart_delay_ms, i.e. served through
+ * moviecart_bus_pump. That is the right shape for an SD wait, but flash_led(1) is
+ * 600 ms — roughly 700,000 cart cycles — and the pump pays per-cycle bookkeeping:
+ * the pump_tick counter inside the drive window, the dead-bus guard state after
+ * it. At that volume the small per-cycle cost accumulates into missed fetches and
+ * kills the picture. SD_STAGE=1 proved it: no SD code runs in that build at all,
+ * yet it went black immediately after its single blink, while the NO_SD baseline
+ * (same code minus the blink) is pixel-perfect.
+ *
+ * waitEndFrame is the loop the baseline runs — one SRAM load between serves and
+ * nothing else — so timing blinks off it costs the display nothing. At 60 Hz,
+ * 9 frames is ~150 ms.
+ *
+ * The trade-off: a blink now needs a running kernel, so a fully dead console
+ * shows no LED. Bounding the wait is what the dead-bus guard was for, and that
+ * guard is repeatedly what breaks the display. A diagnostic that damages the
+ * system it is measuring is worse than no diagnostic.
+ */
+#define LED_FRAMES_ON	9u	/* ~150 ms at 60 Hz */
+#define LED_FRAMES_GAP	18u	/* ~300 ms */
+
+static void
+led_wait_frames(unsigned frames)
+{
+	while (frames--)
+		waitEndFrame();
+}
+
+/*
+ * Wall-clock blink timing, for the codes that report a *failure*.
+ *
+ * Frame-timed blinks are only calibrated while the kernel is healthy, which is
+ * precisely when we do not need them. When the section machine desyncs,
+ * frame markers stop meaning "1/60 s" and start firing spuriously fast, so a
+ * frame-timed code compresses into an uncountable flicker — reported from
+ * hardware as "blinking too rapidly to tell what they are reporting". A
+ * diagnostic that becomes unreadable in the failure case is no diagnostic.
+ *
+ * DWT is independent of the kernel, so the code stays countable no matter how
+ * badly the display has desynced. The deadline is sampled only on A12-low
+ * (bus_serve_ms), so cart cycles stay identical to emulate_cartridge().
+ */
+
+static void
+led_wait_ms(uint32_t ms)
+{
+	bus_serve_ms(ms);
+}
+
+/*
+ * Deliberately slow and lopsided so a code can be counted by eye: a long "here
+ * comes a code" lead-in, then clearly separated flashes.
+ */
+static void
+flash_led_slow(uint8_t num)
+{
+	TESTA0_HIGH;
+	led_wait_ms(1200);
+	for (uint8_t i = 0; i < num; i++) {
+		TESTA0_LOW;
+		led_wait_ms(300);
+		TESTA0_HIGH;
+		led_wait_ms(400);
+	}
+	TESTA0_HIGH;
+	led_wait_ms(1200);
+	/* A failure code repeats forever (fatalBlink). */
+}
+
+/*
+ * Short wall-clock flashes, used only by the STALL_TEST sweeps to number each
+ * step. Wall-clock timing keeps the step number countable even when the stall
+ * being measured breaks the kernel; led_wait_ms samples the clock only on
+ * non-cart cycles, so the serve loop stays as cheap as a frame wait.
+ *
+ * Boot and playback milestones (stage_pulse) use moviecart_stage_blink()
+ * instead, which counts RamKernel entries so the title keeps alternating fields
+ * while it blinks. The trade-off: if a stage breaks the kernel, that milestone
+ * blink stalls part-way (LED stuck on or off) instead of finishing.
+ */
+#define LED_MS_ON	150u
+#define LED_MS_GAP	300u
+
+static void
+flash_led(uint8_t num)
+{
+#if MOVIECART_NO_LED
+	(void)num;
+#else
+	TESTA0_HIGH;
+	for (uint8_t i = 0; i < num; i++) {
+		TESTA0_LOW;
+		led_wait_ms(LED_MS_ON);
+		TESTA0_HIGH;
+		led_wait_ms(LED_MS_ON);
+	}
+	TESTA0_HIGH;
+	led_wait_ms(LED_MS_GAP);
+#endif
+}
+
+static void
+config_gpio_data(void)
+{
+	GPIO_InitTypeDef gpio;
+
+	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOD, ENABLE);
+
+	gpio.GPIO_Pin = GPIO_Pin_8 | GPIO_Pin_9 | GPIO_Pin_10 | GPIO_Pin_11 |
+			GPIO_Pin_12 | GPIO_Pin_13 | GPIO_Pin_14 | GPIO_Pin_15;
+	gpio.GPIO_Mode = GPIO_Mode_IN;
+	gpio.GPIO_OType = GPIO_OType_PP;
+	/*
+	 * Identical to UnoCart's config_gpio_data(), which is proven on this
+	 * board: no pull, and GPIO_Speed is deliberately left ineffective —
+	 * GPIO_Init only programs OSPEEDR for OUT/AF modes, so these pins keep
+	 * the 2 MHz reset-default slew even when flipped to output at runtime.
+	 * Forcing 100 MHz here rings and cross-talks on breadboard wiring.
+	 */
+	gpio.GPIO_Speed = GPIO_Speed_25MHz;
+	gpio.GPIO_PuPd = GPIO_PuPd_NOPULL;
+	GPIO_Init(GPIOD, &gpio);
+}
+
+static void
+config_gpio_addr(void)
+{
+	GPIO_InitTypeDef gpio;
+
+	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOE, ENABLE);
+
+	gpio.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_1 | GPIO_Pin_2 | GPIO_Pin_3 |
+			GPIO_Pin_4 | GPIO_Pin_5 | GPIO_Pin_6 | GPIO_Pin_7 |
+			GPIO_Pin_8 | GPIO_Pin_9 | GPIO_Pin_10 | GPIO_Pin_11 |
+			GPIO_Pin_12 | GPIO_Pin_13 | GPIO_Pin_14 | GPIO_Pin_15;
+	gpio.GPIO_Mode = GPIO_Mode_IN;
+	gpio.GPIO_OType = GPIO_OType_PP;
+	gpio.GPIO_Speed = GPIO_Speed_100MHz;
+	gpio.GPIO_PuPd = GPIO_PuPd_DOWN;
+	GPIO_Init(GPIOE, &gpio);
+}
+
+static void
+config_status_led(void)
+{
+	GPIO_InitTypeDef gpio;
+
+	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOA, ENABLE);
+
+	gpio.GPIO_Pin = STATUS_LED_PIN;
+	gpio.GPIO_Mode = GPIO_Mode_OUT;
+	gpio.GPIO_OType = GPIO_OType_PP;
+	gpio.GPIO_Speed = GPIO_Speed_2MHz;
+	gpio.GPIO_PuPd = GPIO_PuPd_NOPULL;
+	GPIO_Init(STATUS_LED_GPIO, &gpio);
+	TESTA0_HIGH;
+}
+
+static void
+copy_title(uint8_t *dst, const uint8_t *src, int size)
+{
+	while (size > 0) {
+		*dst++ = *src++;
+		size--;
+	}
+}
+
+static void
+setupTitleBuffers(void)
+{
+	r_coreInfo.frameInfo.buffer = mr_buffer1;
+	r_coreInfo.mr_frameInfo1.buffer = mr_buffer1;
+	r_coreInfo.mr_frameInfo2.buffer = mr_buffer2;
+
+	frameInitTitle(&r_coreInfo.frameInfo, 0);
+	frameInitTitle(&r_coreInfo.mr_frameInfo1, 0);
+	frameInitTitle(&r_coreInfo.mr_frameInfo2, 1);
+
+	memset(mr_buffer1, 0, sizeof(mr_buffer1));
+	memset(mr_buffer2, 0, sizeof(mr_buffer2));
+
+	r_coreInfo.frameInfo = r_coreInfo.mr_frameInfo1;
+}
+
+static void
+loadTitlePixels(void)
+{
+	int lineTotal = r_coreInfo.mr_frameInfo1.visibleLines * 5;
+
+	copy_title(r_coreInfo.mr_frameInfo1.graphBuf, TitleGraph1, lineTotal);
+	copy_title(r_coreInfo.mr_frameInfo1.colorBuf, TitleColor1, lineTotal);
+	copy_title(r_coreInfo.mr_frameInfo1.colorBKBuf, TitleBackColor1,
+		   r_coreInfo.mr_frameInfo1.visibleLines);
+
+	copy_title(r_coreInfo.mr_frameInfo2.graphBuf, TitleGraph2, lineTotal);
+	copy_title(r_coreInfo.mr_frameInfo2.colorBuf, TitleColor2, lineTotal);
+	copy_title(r_coreInfo.mr_frameInfo2.colorBKBuf, TitleBackColor2,
+		   r_coreInfo.mr_frameInfo2.visibleLines);
+}
+
+static int
+wait_title_sync(uint32_t timeout_ms)
+{
+	return bus_wait_endframe(timeout_ms);
+}
+
+#if MOVIECART_STALL_TEST && MOVIECART_STALL_TEST != 3
+/*
+ * Stall the bus loop for a known time, serving nothing. This is the thing we are
+ * measuring: exactly what an SDIO command wait or a FatFs cluster walk does to
+ * the Atari. DWT keeps counting with interrupts masked.
+ *
+ * The polling loop costs a handful of cycles per iteration, so the shortest steps
+ * of the fine schedule overshoot their nominal figure somewhat. That only makes
+ * the result conservative: a step that passes really did stall at least that long.
+ */
+static void
+stall_ns(uint32_t ns)
+{
+	uint32_t start = DWT->CYCCNT;
+	uint32_t limit = ns * (SystemCoreClock / 1000000u) / 1000u;
+
+	while ((DWT->CYCCNT - start) < limit)
+		;
+}
+
+/*
+ * Sweep the stall length upward, announcing each step on the status LED, and let
+ * the display be the verdict. The LED is dark for the whole of each test window,
+ * so the pattern reads as: N flashes, dark test window, N+1 flashes, ...
+ *
+ * Step 1 stalls for nothing and must look identical to the normal title build; it
+ * is the control. The first step whose window garbles the picture bounds the
+ * budget, and the previous step is what any SD restructuring has to fit inside.
+ *
+ * STALL_TEST=1 sweeps microseconds, to find out whether whole missed Atari cycles
+ * are survivable. STALL_TEST=2 sweeps the sub-cycle region, to find out how much
+ * of a single 838 ns cycle is actually slack — that is what bounds the size of a
+ * cooperative work step, and it also re-tests the old "settle window" result
+ * against a proper 0 ns control.
+ */
+#define STALL_TEST_FRAMES	300u	/* ~5 s per step; the failure is intermittent */
+
+static __attribute__((noreturn)) void
+run_stall_sweep(void)
+{
+#if MOVIECART_STALL_TEST == 2
+	static const uint16_t steps_ns[] = { 0, 100, 200, 300, 400, 600, 800, 1000 };
+#else
+	static const uint16_t steps_ns[] = {
+		0, 1000, 2000, 4000, 8000, 16000, 32000, 64000
+	};
+#endif
+
+	/* Lock onto a complete frame first, as the title build does. */
+	while (!bus_wait_endframe(3000u))
+		;
+
+	for (;;) {
+		for (unsigned s = 0; s < sizeof(steps_ns) / sizeof(steps_ns[0]); s++) {
+			flash_led((uint8_t)(s + 1));
+			led_wait_frames(42);	/* countable gap; bus stays served */
+
+			for (unsigned f = 0; f < STALL_TEST_FRAMES; f++) {
+				waitEndFrame();
+				if (steps_ns[s])
+					stall_ns(steps_ns[s]);
+			}
+		}
+	}
+}
+#elif MOVIECART_STALL_TEST == 3
+/*
+ * Interleave proof: one 100 ns cooperative step every cart cycle, injected in
+ * bus_service.c after SET_DATA_MODE_OUT. Three announcement flashes, then the
+ * kernel's normal 1-flash-per-second diagnostic owns the LED. Clean title +
+ * that heartbeat means cooperative SD stepping is viable; garble means the
+ * end-of-frame slack does not transfer to mid-cycle work.
+ */
+static __attribute__((noreturn)) void
+run_interleave_proof(void)
+{
+	flash_led(3);
+	led_wait_frames(42);
+
+	emulate_cartridge();
+}
+#endif /* MOVIECART_STALL_TEST */
+
+static __attribute__((noreturn)) void fatalBlink(uint8_t code);
+
+static __attribute__((noreturn)) void
+fatalBlink(uint8_t code)
+{
+	/* The shown field repeats from here on; without this its audio loops as
+	 * a 60 Hz buzz until power-off. */
+	mc_mute_display();
+	mc_log("FATAL blink code", code);
+	for (;;)
+		flash_led_slow(code);	/* wall-clock: readable even with a desynced kernel */
+}
+
+/*
+ * Boot progress on the status LED. Every blink keeps serving the bus, so these
+ * are free to leave in: they are the only way to tell how far boot got when the
+ * picture itself is unusable.
+ *
+ *   1  title synchronized    5  mount failed
+ *   2  card mounted          6  title never synchronized
+ *   3  movie file opened     8  no playable file found
+ *   4  first field valid
+ *
+ * Field faults (title probe and every playback frame) were all reported as a
+ * single "7", which hid which of three different things went wrong. They are now
+ * split, because they point at different layers:
+ *
+ *   7   field header wrong ("MVC\0" missing) — wrong bytes, right length
+ *   9   field geometry invalid (visibleLines / numBlocks out of range)
+ *   10  sector read failed after DISK_READ_RETRIES — the card/read path, not
+ *       the data. Previously this hung silently on the last good frame; that is
+ *       the readable-diagnostic rule, so it now has a code.
+ *   11  the movie file's cluster chain could not be mapped: it is broken, or
+ *       the file has more than EXTENT_MAX fragments (copy it to a freshly
+ *       formatted card)
+ *
+ * MOVIECART_SD_STAGE stops after a chosen milestone and hands the bus back to
+ * the plain title loop, so a failure can be bisected one step at a time instead
+ * of guessing which layer starved the bus.
+ */
+#define BLINK_FIELD_HEADER	7u
+#define BLINK_FIELD_GEOMETRY	9u
+#define BLINK_SECTOR_READ	10u
+#define BLINK_FILE_MAP		11u
+
+static void stage_pulse(uint8_t n);
+
+/* The file picked in the UnoCart menu, and its number among the movies in
+ * its directory (see pf_open_path). */
+static char mc_path[256];
+static int mc_which;
+static bool (*mc_start_cart)(void);
+
+static bool disk_mount_ok;
+static bool disk_open_ok;
+static uint8_t playback_field_blocks;
+
+static void
+mount_work(void)
+{
+	disk_mount_ok = pf_mount();
+}
+
+static void
+open_work(void)
+{
+	disk_open_ok = pf_open_path(mc_path, &state.i_numFrames, &mc_which);
+}
+
+/* Map the opened file's clusters so playback seeks need no FAT reads. */
+static void
+mapOpenFile(void)
+{
+	mc_log("map: start", 0);
+	uint8_t res = pf_map_file();
+	mc_log("map: result (0 ok)", res);
+
+	if (res == PF_MAP_READ)
+		fatalBlink(BLINK_SECTOR_READ);
+	if (res != PF_MAP_OK)
+		fatalBlink(BLINK_FILE_MAP);
+}
+
+static void
+setupDisk(void)
+{
+#if MOVIECART_SD_STAGE == 1
+	emulate_cartridge();
+#endif
+	/* Pins are already up. Outside relaxed mode every yield waits for a
+	 * fresh RamKernel entry. */
+	moviecart_wait_ram_kernel_entry();
+	mc_log("mount: start", 0);
+	mount_work();
+	mc_log("mount: done, ok", disk_mount_ok);
+	if (!disk_mount_ok)
+		fatalBlink(5);
+#if MOVIECART_INIT_PHASE == 13
+	emulate_cartridge();
+#endif
+	stage_pulse(2);
+
+#if MOVIECART_SD_STAGE == 2
+	emulate_cartridge();
+#endif
+	state.io_frameNumber = 1;
+	state.io_bits &= ~STATE_PLAYING;
+	/* flash_led returns mid-visible; do not start the directory walk there. */
+	moviecart_wait_ram_kernel_entry();
+	mc_log("open selected file: start", 0);
+	open_work();
+	mc_log("open selected file: done, ok", disk_open_ok);
+	if (!disk_open_ok)
+		fatalBlink(8);
+	mc_log("open: fields in file", state.i_numFrames);
+	mapOpenFile();
+	mc_log("map: done", 0);
+#if MOVIECART_INIT_PHASE == 14
+	emulate_cartridge();
+#endif
+	moviecart_wait_ram_kernel_entry();
+#if MOVIECART_INIT_PHASE == 151
+	emulate_cartridge();
+#endif
+	stage_pulse(3);
+	moviecart_wait_ram_kernel_entry();
+#if MOVIECART_INIT_PHASE == 152
+	emulate_cartridge();
+#endif
+
+#if MOVIECART_SD_STAGE == 3
+	emulate_cartridge();
+#endif
+}
+
+/* Milestone blink, about 2-5 s each; off by default, make NO_LED=0 enables them. */
+static void
+stage_pulse(uint8_t n)
+{
+	mc_log("milestone", n);
+#if MOVIECART_NO_LED
+	(void)n;
+#else
+	moviecart_stage_blink(n);
+#endif
+}
+
+#define FIELD_LOAD_ATTEMPTS	4
+#define TITLE_HOLD_FRAMES	120u	/* boot title hold, ~2 s at 60 Hz */
+
+static struct frameInfo *pending_frame;
+static uint32_t pending_offset;
+static uint8_t pending_attempt;
+static uint8_t field_dma_pending;
+static uint8_t field_restart_pending;	/* a start failed; retry it next window */
+
+static struct frameInfo *
+inactiveFrameInfo(void)
+{
+	return r_coreInfo.mr_bufferIndex
+		? &r_coreInfo.mr_frameInfo1
+		: &r_coreInfo.mr_frameInfo2;
+}
+
+/*
+ * Start the field's one CMD18 transfer, but deliberately do not drain or poll
+ * it here. DMA may finish while the other buffer is visible.
+ */
+static uint8_t
+beginFieldRead(struct frameInfo *fInfo, uint32_t offset, uint8_t attempt)
+{
+	if (!playback_field_blocks)
+		return BLINK_FIELD_GEOMETRY;
+
+	mc_sdio_gate_relaxed = 1;
+	bool started = pf_seek_block(offset) &&
+		pf_read_blocks_begin(fInfo->buffer, playback_field_blocks);
+	mc_sdio_gate_relaxed = 0;
+
+	if (!started) {
+		/*
+		 * One failed CMD18 start (a command CRC error, a response timeout)
+		 * counts as one of the field's attempts; the driver has already
+		 * cleaned up the data path. Start again in the next window.
+		 */
+		if (attempt + 1u >= FIELD_LOAD_ATTEMPTS)
+			return BLINK_SECTOR_READ;
+		mc_diag_note(DIAG_FIELD_RETRY);
+		pending_frame = fInfo;
+		pending_offset = offset;
+		pending_attempt = attempt + 1u;
+		field_restart_pending = 1;
+		return 0;
+	}
+
+	pending_frame = fInfo;
+	pending_offset = offset;
+	pending_attempt = attempt;
+	field_dma_pending = 1;
+	return 0;
+}
+
+/*
+ * Drain the transfer started in the preceding blanking interval. A failed read
+ * is restarted into the same inactive buffer; it is never marked ready or
+ * exposed to VisibleBars until both DMA completion and field validation pass.
+ *
+ * Return 0 when a buffer became ready, 1 when a retry was started, or an LED
+ * fault code when all attempts failed.
+ */
+static uint8_t
+finishFieldRead(void)
+{
+	mc_sdio_gate_relaxed = 1;
+	bool read_ok = pf_read_blocks_finish();
+	mc_sdio_gate_relaxed = 0;
+	field_dma_pending = 0;
+
+	uint8_t fault = 0;
+	if (!read_ok) {
+		fault = BLINK_SECTOR_READ;
+	} else if (memcmp(pending_frame->buffer, "MVC\0", 4) != 0) {
+		fault = BLINK_FIELD_HEADER;
+	} else {
+		frameInit(pending_frame);
+		if (!pending_frame->visibleLines || !pending_frame->numBlocks ||
+		    pending_frame->numBlocks > FIELD_MAX_BLOCKS ||
+		    pending_frame->numBlocks != playback_field_blocks)
+			fault = BLINK_FIELD_GEOMETRY;
+	}
+
+	if (fault)
+		mc_log("field read fault (blink code), attempt", (uint32_t)fault << 8 | pending_attempt);
+	if (!fault) {
+		/* Same RamKernel window as the finish: update.c's yields are no-ops. */
+		mc_sdio_gate_relaxed = 1;
+		updateBuffer(&state, pending_frame);
+		mc_field_swap_to_display();
+		mc_sdio_gate_relaxed = 0;
+		return 0;
+	}
+
+	if (++pending_attempt >= FIELD_LOAD_ATTEMPTS)
+		return fault;
+
+	mc_diag_note(DIAG_FIELD_RETRY);
+	disk_read_invalidate();
+	if (beginFieldRead(pending_frame, pending_offset, pending_attempt))
+		return fault;
+	return 1;
+}
+
+static void
+coreInfoToState(void)
+{
+	state.i_swcha = (uint8_t)r_coreInfo.mr_swcha;
+	state.i_swchb = (uint8_t)r_coreInfo.mr_swchb;
+	state.i_inpt4 = (uint8_t)r_coreInfo.mr_inpt4;
+	state.i_inpt5 = (uint8_t)r_coreInfo.mr_inpt5;
+
+	state.i_swcha = ((state.i_swcha << 4) | (state.i_swcha & 0x0f)) & state.i_swcha;
+	state.i_inpt4 &= state.i_inpt5;
+}
+
+static uint32_t title_offset;
+static uint8_t *title_probe_buf;
+static uint8_t title_probe_fault;	/* 0 ok, else BLINK_* */
+
+/*
+ * Read the first field's header sector through the sector cache: an aligned
+ * SRAM1 slot DMA can reach. (A display buffer is not word aligned, and the
+ * driver's unaligned fallback used to bounce through a stack buffer in CCM,
+ * which DMA cannot reach.)
+ */
+static void
+title_probe_work(void)
+{
+	if (!pf_seek_block(title_offset)) {
+		title_probe_fault = BLINK_FIELD_GEOMETRY;	/* file too short */
+		return;
+	}
+	title_probe_buf = disk_try_read_block1(pf_current_sector());
+	if (!title_probe_buf) {
+		title_probe_fault = BLINK_SECTOR_READ;
+		return;
+	}
+	if (memcmp(title_probe_buf, "MVC\0", 4) != 0) {
+		title_probe_fault = BLINK_FIELD_HEADER;
+		return;
+	}
+	title_probe_fault = 0;
+}
+
+static void
+runTitle(void)
+{
+	uint16_t m_titleFrame = 300;
+
+	state.io_frameNumber = 1;
+	title_offset = (uint32_t)(state.io_frameNumber * FIELD_NUM_BLOCKS);
+
+	/* Probe the file's geometry from the first field's header. */
+	struct frameInfo fInfo;
+	title_probe_work();
+	if (title_probe_fault)
+		fatalBlink(title_probe_fault);
+	fInfo.buffer = title_probe_buf;
+
+	frameInit(&fInfo);
+	if (!fInfo.visibleLines || !fInfo.numBlocks ||
+	    fInfo.numBlocks > FIELD_MAX_BLOCKS)
+		fatalBlink(BLINK_FIELD_GEOMETRY);
+	playback_field_blocks = fInfo.numBlocks;
+	uint8_t fileVis = fInfo.visibleLines;
+
+#if MOVIECART_INIT_PHASE == 16
+	emulate_cartridge();
+#endif
+
+	stage_pulse(4);
+
+	int diff = (int)fileVis - (int)r_coreInfo.mr_frameInfo1.visibleLines;
+
+	r_coreInfo.mr_frameInfo1.visibleLines += diff;
+	r_coreInfo.mr_frameInfo2.visibleLines += diff;
+	r_coreInfo.mr_frameInfo1.totalLines += diff;
+	r_coreInfo.mr_frameInfo2.totalLines += diff;
+
+	while (m_titleFrame--) {
+		waitEndFrame();
+		coreInfoToState();
+		updateTransport(&state);
+		if (state.io_bits & STATE_PLAYING)
+			break;
+	}
+
+	if (!mc_sd_prepare_playback_read())
+		fatalBlink(BLINK_SECTOR_READ);
+}
+
+/*
+ * Show the title while the next file is opened and mapped, instead of a black
+ * screen. Both field buffers are rebuilt with the title, each step at the start
+ * of its own RamKernel window, and the frame waits then alternate its fields
+ * as at boot. The title keeps the playing file's visible line count, so the
+ * TV sees no geometry change. The next field read replaces it.
+ */
+static void
+showTitleScreen(void)
+{
+	int diff = (int)r_coreInfo.frameInfo.visibleLines - 192;
+
+	waitEndFrame();
+	memset(mr_buffer1, 0, sizeof(mr_buffer1));
+	memset(mr_buffer2, 0, sizeof(mr_buffer2));
+
+	waitEndFrame();
+	frameInitTitle(&r_coreInfo.mr_frameInfo1, 0);
+	frameInitTitle(&r_coreInfo.mr_frameInfo2, 1);
+	loadTitlePixels();
+	r_coreInfo.mr_frameInfo1.visibleLines += diff;
+	r_coreInfo.mr_frameInfo2.visibleLines += diff;
+	r_coreInfo.mr_frameInfo1.totalLines += diff;
+	r_coreInfo.mr_frameInfo2.totalLines += diff;
+	mc_playback_pipeline = 0;	/* frame waits swap the title fields */
+	mc_field_swap_to_display();
+}
+
+static int select_which;
+
+static void
+select_open_work(void)
+{
+	disk_open_ok = pf_open_file(&state.i_numFrames, select_which);
+}
+
+static bool
+checkSelectVideo(int *which)
+{
+	bool selected = false;
+
+	if ((state.io_bits & STATE_END) ||
+	    ((state.i_swchb & 0x02) && !((uint8_t)r_coreInfo.mr_swchb & 0x02))) {
+		selected = true;
+		mc_log("select: next file (end bit in io_bits)", state.io_bits);
+		state.io_bits &= ~STATE_END;
+		/* Silence now: the directory walk takes over a second, and the
+		 * shown field's audio would loop as a buzz. */
+		mc_mute_display();
+		showTitleScreen();
+
+		(*which)++;
+		for (;;) {
+			select_which = *which;
+			select_open_work();
+			if (disk_open_ok)
+				break;
+			if (*which == 1) {
+				/* No movie pf_open_file() accepts in this directory:
+				 * replay the one picked in the menu. */
+				disk_open_ok = pf_open_path(mc_path,
+					&state.i_numFrames, which);
+				if (!disk_open_ok)
+					fatalBlink(8);
+				break;
+			}
+			*which = 1;
+		}
+		mapOpenFile();
+
+		/* Cache the newly selected file's field size before its DMA pipeline
+		 * starts; selected files may differ between NTSC and PAL geometry. */
+		if (!pf_seek_block(FIELD_NUM_BLOCKS))
+			fatalBlink(BLINK_FIELD_GEOMETRY);
+		uint8_t *probe = disk_try_read_block1(pf_current_sector());
+		struct frameInfo probe_info;
+		if (!probe)
+			fatalBlink(BLINK_SECTOR_READ);
+		probe_info.buffer = probe;
+		if (memcmp(probe, "MVC\0", 4) != 0)
+			fatalBlink(BLINK_FIELD_HEADER);
+		frameInit(&probe_info);
+		if (!probe_info.visibleLines || !probe_info.numBlocks ||
+		    probe_info.numBlocks > FIELD_MAX_BLOCKS)
+			fatalBlink(BLINK_FIELD_GEOMETRY);
+		playback_field_blocks = probe_info.numBlocks;
+
+		state.io_frameNumber = 1;
+		state.io_bits |= STATE_PLAYING;
+
+		for (int i = 0; i < 30; i++)
+			waitEndFrame();
+		mc_playback_pipeline = 1;
+	}
+
+	coreInfoToState();
+	return selected;
+}
+
+static void
+runFrameLoop(void)
+{
+	int which = mc_which;
+
+	state.io_frameNumber = 1;
+	state.io_bits = STATE_PLAYING;
+	field_dma_pending = 0;
+	field_restart_pending = 0;
+	stage_pulse(5);		/* title still alternating fields (no pipeline yet) */
+	mc_playback_pipeline = 1;
+	mc_log("playback: start", 0);
+
+	while (1) {
+		waitEndFrame();
+
+		if (field_restart_pending) {
+			field_restart_pending = 0;
+			uint8_t restart_fault = beginFieldRead(pending_frame,
+				pending_offset, pending_attempt);
+			if (restart_fault)
+				fatalBlink(restart_fault);
+			continue;	/* the previous field stays on screen */
+		}
+
+		if (field_dma_pending) {
+			uint8_t finish = finishFieldRead();
+			if (finish > 1)
+				fatalBlink(finish);
+			if (finish == 1)
+				continue;	/* retry started; next waitEndFrame serves on */
+		}
+
+		checkSelectVideo(&which);
+		updateTransport(&state);
+
+		/*
+		 * After $F1C1 the 6502 is in RIOT blanking. Finish the previous
+		 * field's DMA, validate it, and swap display pointers here — still
+		 * in blanking — then start the next CMD18 into the buffer whose
+		 * visible use just ended. $F09D only begins VisibleBars; it does
+		 * not swap. The first pass fills the inactive buffer and repeats
+		 * the title once.
+		 */
+		uint32_t offset =
+			(uint32_t)(state.io_frameNumber * FIELD_NUM_BLOCKS);
+		uint8_t start_fault =
+			beginFieldRead(inactiveFrameInfo(), offset, 0);
+		if (start_fault)
+			fatalBlink(start_fault);
+
+		/* waitEndFrame() at the top serves out this window, the visible
+		 * kernel and OsHead, and returns at the next RamKernel entry. */
+	}
+}
+
+/*
+ * Runs on the CCM stack. Everything slow happens before the menu is told to
+ * start the cart: once mc_start_cart() returns, the 6507 is two WSYNCs away
+ * from reading the reset vector.
+ */
+static __attribute__((used, noinline, noreturn)) void
+mc_boot(void)
+{
+	/* The bus loop runs from flash; the MovieCart image's SystemInit turns
+	 * on ART prefetch, UnoCart's does not. */
+	FLASH->ACR |= FLASH_ACR_PRFTEN;
+
+	config_gpio_data();
+	config_gpio_addr();
+	config_status_led();
+	dwt_init();
+	mc_log_boot();
+	/* SDIO on PD2 / PC8-12: do this before the 6507 is served so cart
+	 * GPIOD MODER/ODR is not rewritten in the middle of a frame. */
+	mc_sd_pins_init();
+
+	coreInit();
+	setupTitleBuffers();
+	loadTitlePixels();
+
+	/* Serve the menu until it asks for the cart, then jump in. */
+	if (!mc_start_cart())
+		NVIC_SystemReset();
+	__disable_irq();
+
+	if (!wait_title_sync(3000u))
+		fatalBlink(6);
+	/* Title only, before mount, blinks, or SDIO: ~2 s of frame waits, so the
+	 * title keeps alternating fields. */
+	for (unsigned i = 0; i < TITLE_HOLD_FRAMES; i++)
+		moviecart_wait_ram_kernel_entry();
+	moviecart_wait_ram_kernel_entry();
+	stage_pulse(1);
+
+	mc_log("setupDisk", 0);
+	setupDisk();
+
+	updateInit();
+	runTitle();
+	runFrameLoop();
+	for (;;)
+		;
+}
+
+/* Switch to the CCM stack MovieCart was laid out for, then boot. */
+static __attribute__((naked, noreturn)) void
+mc_enter(uint32_t sp)
+{
+	__asm volatile (
+		"msr	msp, r0\n\t"
+		"b	mc_boot\n\t"
+	);
+}
+
+extern uint32_t _mc_sidata, _mc_sdata, _mc_edata, _mc_sbss, _mc_ebss;
+extern uint32_t _mc_estack;
+
+void
+moviecart_launch(const char *path, bool (*start_cart)(void))
+{
+	__disable_irq();
+	/* MovieCart polls SDIO and DMA itself; UnoCart's handlers and its
+	 * SysTick delay must not run underneath it. */
+	SysTick->CTRL = 0;
+	SCB->ICSR = SCB_ICSR_PENDSTCLR_Msk;
+	NVIC_DisableIRQ(SDIO_IRQn);
+	NVIC_DisableIRQ(DMA2_Stream3_IRQn);
+	NVIC_DisableIRQ(DMA2_Stream6_IRQn);
+
+	/* MovieCart's .data/.bss live in CCM, which UnoCart's startup does not
+	 * initialise and some cart types use as ROM space. */
+	RCC->AHB1ENR |= RCC_AHB1ENR_CCMDATARAMEN;
+	for (uint32_t *src = &_mc_sidata, *dst = &_mc_sdata; dst < &_mc_edata;)
+		*dst++ = *src++;
+	for (uint32_t *dst = &_mc_sbss; dst < &_mc_ebss;)
+		*dst++ = 0;
+
+	strncpy(mc_path, path, sizeof(mc_path) - 1);
+	mc_start_cart = start_cart;
+
+	mc_enter((uint32_t)&_mc_estack);
+}

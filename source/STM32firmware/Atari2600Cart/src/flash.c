@@ -81,16 +81,19 @@ static uint8_t sector_id_for_address(uint32_t address) {
 	return 0xff;
 }
 
+// Start of the first whole sector after the firmware, so erasing it can never
+// touch firmware code.
 static uint32_t lowest_available_flash_address() {
-	uint8_t firmware_size = FIRST_FREE_BYTE - 0x08000000;
+	uint32_t firmware_end = FIRST_FREE_BYTE;
 
-	return (RESERVED_FLASH_KB * 1024) > firmware_size ?
-		(0x08000000 + RESERVED_FLASH_KB * 1024) :
-		FIRST_FREE_BYTE;
+	if (firmware_end < 0x08000000 + RESERVED_FLASH_KB * 1024)
+		firmware_end = 0x08000000 + RESERVED_FLASH_KB * 1024;
+
+	return sector_boundaries[sector_id_for_address(firmware_end - 1)];
 }
 
 uint32_t available_flash() {
-	return flash_size_bytes() - (RESERVED_FLASH_KB * 1024);
+	return flash_size_bytes() - (lowest_available_flash_address() - 0x08000000);
 }
 
 bool prepare_flash(uint32_t size, flash_context* context) {

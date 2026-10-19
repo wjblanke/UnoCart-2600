@@ -76,6 +76,18 @@ Internal pull-ups are enabled on **D0–D3** and **CMD**. **CK (PC12)** is confi
 
 System clock is **HSI → PLL at 168 MHz** (SDIOCLK 48 MHz via PLLQ). This avoids depending on the Discovery-oriented HSE setup; the DevEBox has an 8 MHz HSE, but this firmware does not require it for SYSCLK.
 
+### MovieCart (`.MVC`) playback
+
+`.MVC` files are listed in the menu. Selecting one hands the board to the MovieCart STM32 backend (`src/moviecart/`, taken from `moviecart/firmware/stm32` at `28e9b77`). The menu serves its usual reboot handshake, the 6507 jumps into the MovieCart kernel, and the chosen file plays after the MovieCart title screen. Select moves to the next movie in the same directory, and the other transport controls are as in stock MovieCart. Like every other cart type, leaving a movie means power-cycling.
+
+How it fits into the UnoCart image:
+
+- The backend has its own polled SDIO driver and Petit FatFs, so it is linked into one relocatable object (`build/moviecart.o`) that exports only `moviecart_launch()`. Nothing else in it can collide with UnoCart's symbols.
+- Its `.data`/`.bss` and its stack live in CCM, as in the MovieCart image. `moviecart_launch()` sets them up and switches stacks, because the UnoCart startup does not. Its DMA buffers (`.sram1`) reuse the menu's 96K heap, and the second field buffer sits at the start of SRAM2.
+- `pf_open_path()` opens the selected file by its 8.3 path, including in subdirectories. MovieCart needs a FAT32 card.
+
+The image is now larger than 64K. `flash.c` stores large ROMs from the first whole flash sector after the firmware (0x08020000), so loading one can never erase firmware code.
+
 ### Building
 
 From `source/STM32firmware/Atari2600Cart` with an Arm GNU toolchain (`arm-none-eabi-gcc`, with newlib). A Darwin aarch64 toolchain may be unpacked under `tools/` in this repo for local builds:
